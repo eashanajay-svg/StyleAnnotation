@@ -10,7 +10,7 @@ private enum AnnotationMode: String, CaseIterable {
     var symbol: String {
         switch self {
         case .highlight: return "highlighter"
-        case .note: return "pencil.tip"
+        case .note: return "note.text"
         }
     }
 }
@@ -35,6 +35,12 @@ private enum AnnotationColor: String, CaseIterable, Identifiable {
     }
 }
 
+private struct StickyNote: Identifiable {
+    let id = UUID()
+    var text = ""
+    var offset = CGSize.zero
+}
+
 private final class CanvasController: ObservableObject {
     weak var canvasView: PKCanvasView?
 
@@ -51,7 +57,7 @@ private final class CanvasController: ObservableObject {
     }
 }
 
-/// A document surface with Apple Pencil highlighting and freehand note tools.
+/// A document surface with Apple Pencil highlighting and editable sticky notes.
 struct PencilAnnotationView<Content: View>: View {
     private let content: Content
     private let pageHeight: CGFloat
@@ -59,6 +65,7 @@ struct PencilAnnotationView<Content: View>: View {
     @State private var drawing = PKDrawing()
     @State private var mode: AnnotationMode = .highlight
     @State private var selectedColor: AnnotationColor = .yellow
+    @State private var stickyNotes: [StickyNote] = []
     @StateObject private var canvasController = CanvasController()
 
     init(
@@ -87,6 +94,13 @@ struct PencilAnnotationView<Content: View>: View {
                     )
                     .frame(maxWidth: .infinity)
                     .frame(height: pageHeight)
+
+                    ForEach($stickyNotes) { $note in
+                        StickyNoteCard(note: $note) {
+                            let noteID = note.id
+                            stickyNotes.removeAll { $0.id == noteID }
+                        }
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: pageHeight)
@@ -106,7 +120,7 @@ struct PencilAnnotationView<Content: View>: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 14) {
             Image(systemName: "scribble.variable")
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(.tint)
@@ -118,7 +132,7 @@ struct PencilAnnotationView<Content: View>: View {
                     } label: {
                         Label(tool.rawValue, systemImage: tool.symbol)
                             .font(.system(size: 14, weight: .medium))
-                            .padding(.horizontal, 12)
+                            .padding(.horizontal, 10)
                             .padding(.vertical, 9)
                             .background {
                                 if mode == tool {
@@ -132,33 +146,46 @@ struct PencilAnnotationView<Content: View>: View {
                 }
             }
 
-            Rectangle()
-                .fill(Color.primary.opacity(0.1))
-                .frame(width: 1, height: 24)
+            if mode == .highlight {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.1))
+                    .frame(width: 1, height: 24)
 
-            HStack(spacing: 10) {
-                ForEach(AnnotationColor.allCases) { choice in
-                    Button {
-                        selectedColor = choice
-                    } label: {
-                        Circle()
-                            .fill(choice.color)
-                            .frame(width: 22, height: 22)
-                            .overlay {
-                                Circle().strokeBorder(.white.opacity(0.9), lineWidth: 2)
-                            }
-                            .padding(3)
-                            .overlay {
-                                Circle().strokeBorder(
-                                    selectedColor == choice ? Color.primary.opacity(0.65) : .clear,
-                                    lineWidth: 1.5
-                                )
-                            }
+                HStack(spacing: 8) {
+                    ForEach(AnnotationColor.allCases) { choice in
+                        Button {
+                            selectedColor = choice
+                        } label: {
+                            Circle()
+                                .fill(choice.color)
+                                .frame(width: 20, height: 20)
+                                .overlay {
+                                    Circle().strokeBorder(.white.opacity(0.9), lineWidth: 2)
+                                }
+                                .padding(3)
+                                .overlay {
+                                    Circle().strokeBorder(
+                                        selectedColor == choice ? Color.primary.opacity(0.65) : .clear,
+                                        lineWidth: 1.5
+                                    )
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(choice.rawValue) highlighter")
+                        .accessibilityAddTraits(selectedColor == choice ? .isSelected : [])
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(choice.rawValue) ink")
-                    .accessibilityAddTraits(selectedColor == choice ? .isSelected : [])
                 }
+            } else {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        stickyNotes.append(StickyNote())
+                    }
+                } label: {
+                    Label("Add sticky note", systemImage: "note.text.badge.plus")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .accessibilityHint("Adds an editable yellow sticky note to the page")
             }
 
             Spacer(minLength: 4)
@@ -173,14 +200,17 @@ struct PencilAnnotationView<Content: View>: View {
             }
             .accessibilityLabel("Redo")
 
-            Button(action: canvasController.clear) {
+            Button {
+                canvasController.clear()
+                stickyNotes.removeAll()
+            } label: {
                 Image(systemName: "trash")
             }
-            .accessibilityLabel("Clear annotations")
+            .accessibilityLabel("Clear annotations and sticky notes")
         }
         .buttonStyle(.borderless)
         .foregroundStyle(Color.secondary)
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 20)
         .padding(.vertical, 14)
         .background(.regularMaterial)
         .overlay(alignment: .bottom) {
@@ -188,6 +218,63 @@ struct PencilAnnotationView<Content: View>: View {
                 .fill(Color.primary.opacity(0.08))
                 .frame(height: 1)
         }
+    }
+}
+
+private struct StickyNoteCard: View {
+    @Binding var note: StickyNote
+    let onDelete: () -> Void
+    @State private var dragStart = CGSize.zero
+
+    private let noteColor = Color(red: 1.0, green: 0.91, blue: 0.43)
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Text("NOTE")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.2)
+                    .foregroundStyle(.black.opacity(0.55))
+
+                Spacer()
+
+                Button(action: onDelete) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.black.opacity(0.45))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete sticky note")
+            }
+
+            TextEditor(text: $note.text)
+                .font(.system(size: 16, weight: .light, design: .rounded))
+                .foregroundColor(.black)
+                .scrollContentBackground(.hidden)
+                .background(Color.clear)
+                .accessibilityLabel("Sticky note text")
+        }
+        .padding(12)
+        .frame(width: 210, height: 190)
+        .background(noteColor)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.2), radius: 8, x: 2, y: 4)
+        .offset(x: 48 + note.offset.width, y: 120 + note.offset.height)
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    note.offset = CGSize(
+                        width: dragStart.width + value.translation.width,
+                        height: dragStart.height + value.translation.height
+                    )
+                }
+                .onEnded { _ in
+                    dragStart = note.offset
+                }
+        )
     }
 }
 
@@ -223,12 +310,10 @@ private struct PencilCanvas: UIViewRepresentable {
     }
 
     private func updateTool(on canvas: PKCanvasView) {
-        let ink = UIColor(color)
-        switch mode {
-        case .highlight:
+        canvas.isUserInteractionEnabled = mode == .highlight
+        if mode == .highlight {
+            let ink = UIColor(color)
             canvas.tool = PKInkingTool(.marker, color: ink.withAlphaComponent(0.4), width: 20)
-        case .note:
-            canvas.tool = PKInkingTool(.pen, color: ink, width: 3)
         }
     }
 
@@ -262,7 +347,7 @@ struct PencilAnnotationView_Previews: PreviewProvider {
                     .font(.system(size: 19, weight: .medium, design: .serif))
                     .foregroundStyle(.secondary)
 
-                Text("A careful walk is a kind of attention. It asks us to slow down, to look beyond the obvious, and to notice the details that would otherwise pass without a name. The shape of a shadow can tell us where the sun has been, while a worn path hints at the choices people make every day.")
+                Text("A careful walk is a kind of attention. It asks us to slow down, look beyond the obvious, and notice details that might otherwise pass without a name. The shape of a shadow can tell us where the sun has been, while a worn path hints at the choices people make every day. Try highlighting a sentence, or add a yellow sticky note with your own thought.")
                     .font(.system(size: 18, design: .serif))
                     .lineSpacing(9)
                     .foregroundStyle(Color.primary.opacity(0.85))
@@ -271,7 +356,7 @@ struct PencilAnnotationView_Previews: PreviewProvider {
                     .font(.system(size: 23, weight: .semibold, design: .serif))
                     .padding(.top, 8)
 
-                Text("Choose a phrase that stays with you. Mark it with the highlighter, then switch to the pencil to add a thought in the margin.")
+                Text("Choose a phrase that stays with you. Use the Highlight tool to mark it. Switch to Note and choose Add sticky note to place a movable, editable note on the page.")
                     .font(.system(size: 18, design: .serif))
                     .lineSpacing(9)
                     .foregroundStyle(Color.primary.opacity(0.85))
