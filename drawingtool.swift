@@ -1,5 +1,6 @@
 import PencilKit
 import SwiftUI
+import UIKit
 
 private enum AnnotationMode: String, CaseIterable {
     case highlight = "Highlight"
@@ -7,8 +8,8 @@ private enum AnnotationMode: String, CaseIterable {
 
     var symbol: String {
         switch self {
-        case .highlight: "highlighter"
-        case .note: "pencil.tip"
+        case .highlight: return "highlighter"
+        case .note: return "pencil.tip"
         }
     }
 }
@@ -24,11 +25,11 @@ private enum AnnotationColor: String, CaseIterable, Identifiable {
 
     var color: Color {
         switch self {
-        case .yellow: Color(red: 1.0, green: 0.83, blue: 0.25)
-        case .pink: Color(red: 0.96, green: 0.48, blue: 0.62)
-        case .blue: Color(red: 0.35, green: 0.67, blue: 0.95)
-        case .green: Color(red: 0.32, green: 0.76, blue: 0.56)
-        case .purple: Color(red: 0.65, green: 0.52, blue: 0.91)
+        case .yellow: return Color(red: 1.0, green: 0.83, blue: 0.25)
+        case .pink: return Color(red: 0.96, green: 0.48, blue: 0.62)
+        case .blue: return Color(red: 0.35, green: 0.67, blue: 0.95)
+        case .green: return Color(red: 0.32, green: 0.76, blue: 0.56)
+        case .purple: return Color(red: 0.65, green: 0.52, blue: 0.91)
         }
     }
 }
@@ -243,37 +244,39 @@ private struct PencilCanvas: UIViewRepresentable {
     }
 }
 
-#Preview {
-    PencilAnnotationView {
-        VStack(alignment: .leading, spacing: 22) {
-            Text("FIELD NOTES")
-                .font(.system(size: 12, weight: .bold, design: .rounded))
-                .tracking(2)
-                .foregroundStyle(.secondary)
+struct PencilAnnotationView_Previews: PreviewProvider {
+    static var previews: some View {
+        PencilAnnotationView {
+            VStack(alignment: .leading, spacing: 22) {
+                Text("FIELD NOTES")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .tracking(2)
+                    .foregroundStyle(.secondary)
 
-            Text("The art of noticing")
-                .font(.system(size: 34, weight: .bold, design: .serif))
-                .foregroundStyle(Color.primary)
+                Text("The art of noticing")
+                    .font(.system(size: 34, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.primary)
 
-            Text("Small observations can change the way we understand a place.")
-                .font(.system(size: 19, weight: .medium, design: .serif))
-                .foregroundStyle(.secondary)
+                Text("Small observations can change the way we understand a place.")
+                    .font(.system(size: 19, weight: .medium, design: .serif))
+                    .foregroundStyle(.secondary)
 
-            Text("A careful walk is a kind of attention. It asks us to slow down, to look beyond the obvious, and to notice the details that would otherwise pass without a name. The shape of a shadow, a change in the air, or a familiar path seen from a new angle can become an invitation to think differently.")
-                .font(.system(size: 18, design: .serif))
-                .lineSpacing(9)
-                .foregroundStyle(Color.primary.opacity(0.85))
+                Text("A careful walk is a kind of attention. It asks us to slow down, to look beyond the obvious, and to notice the details that would otherwise pass without a name. The shape of a shadow can tell us where the sun has been, while a worn path hints at the choices people make every day.")
+                    .font(.system(size: 18, design: .serif))
+                    .lineSpacing(9)
+                    .foregroundStyle(Color.primary.opacity(0.85))
 
-            Text("Look closely")
-                .font(.system(size: 23, weight: .semibold, design: .serif))
-                .padding(.top, 8)
+                Text("Look closely")
+                    .font(.system(size: 23, weight: .semibold, design: .serif))
+                    .padding(.top, 8)
 
-            Text("Choose a phrase that stays with you. Mark it with the highlighter, then switch to the pencil to add a thought in the margin.")
-                .font(.system(size: 18, design: .serif))
-                .lineSpacing(9)
-                .foregroundStyle(Color.primary.opacity(0.85))
+                Text("Choose a phrase that stays with you. Mark it with the highlighter, then switch to the pencil to add a thought in the margin.")
+                    .font(.system(size: 18, design: .serif))
+                    .lineSpacing(9)
+                    .foregroundStyle(Color.primary.opacity(0.85))
 
-            Spacer()
+                Spacer()
+            }
         }
     }
 }
