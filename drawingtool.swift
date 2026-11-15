@@ -5,11 +5,13 @@ import UIKit
 
 private enum AnnotationMode: String, CaseIterable {
     case highlight = "Highlight"
+    case handwriting = "Handwriting"
     case note = "Note"
 
     var symbol: String {
         switch self {
         case .highlight: return "highlighter"
+        case .handwriting: return "pencil.tip"
         case .note: return "note.text"
         }
     }
@@ -24,13 +26,14 @@ private enum AnnotationColor: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    // More saturated colors remain visible beneath the translucent marker ink.
     var color: Color {
         switch self {
-        case .yellow: return Color(red: 1.0, green: 0.83, blue: 0.25)
-        case .pink: return Color(red: 0.96, green: 0.48, blue: 0.62)
-        case .blue: return Color(red: 0.35, green: 0.67, blue: 0.95)
-        case .green: return Color(red: 0.32, green: 0.76, blue: 0.56)
-        case .purple: return Color(red: 0.65, green: 0.52, blue: 0.91)
+        case .yellow: return Color(red: 0.96, green: 0.72, blue: 0.08)
+        case .pink: return Color(red: 0.86, green: 0.25, blue: 0.43)
+        case .blue: return Color(red: 0.16, green: 0.43, blue: 0.78)
+        case .green: return Color(red: 0.12, green: 0.55, blue: 0.32)
+        case .purple: return Color(red: 0.48, green: 0.32, blue: 0.77)
         }
     }
 }
@@ -38,7 +41,10 @@ private enum AnnotationColor: String, CaseIterable, Identifiable {
 private struct StickyNote: Identifiable {
     let id = UUID()
     var text = ""
+    var drawing = PKDrawing()
+    var handwritingEnabled = false
     var offset = CGSize.zero
+    var size = CGSize(width: 210, height: 190)
 }
 
 private final class CanvasController: ObservableObject {
@@ -57,7 +63,7 @@ private final class CanvasController: ObservableObject {
     }
 }
 
-/// A document surface with Apple Pencil highlighting and editable sticky notes.
+/// A document surface with Apple Pencil highlighting, freehand writing, and sticky notes.
 struct PencilAnnotationView<Content: View>: View {
     private let content: Content
     private let pageHeight: CGFloat
@@ -175,7 +181,7 @@ struct PencilAnnotationView<Content: View>: View {
                         .accessibilityAddTraits(selectedColor == choice ? .isSelected : [])
                     }
                 }
-            } else {
+            } else if mode == .note {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         stickyNotes.append(StickyNote())
@@ -185,7 +191,12 @@ struct PencilAnnotationView<Content: View>: View {
                         .font(.system(size: 14, weight: .medium))
                 }
                 .buttonStyle(.borderless)
-                .accessibilityHint("Adds an editable yellow sticky note to the page")
+                .accessibilityHint("Adds a movable, resizable note with typing and handwriting options")
+            } else {
+                Label("Thin black pencil · write anywhere", systemImage: "pencil.tip")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Handwriting mode. Write anywhere on the page with a thin black pencil.")
             }
 
             Spacer(minLength: 4)
@@ -225,6 +236,7 @@ private struct StickyNoteCard: View {
     @Binding var note: StickyNote
     let onDelete: () -> Void
     @State private var dragStart = CGSize.zero
+    @State private var resizeStart: CGSize?
 
     private let noteColor = Color(red: 1.0, green: 0.91, blue: 0.43)
 
@@ -238,6 +250,15 @@ private struct StickyNoteCard: View {
 
                 Spacer()
 
+                Button {
+                    note.handwritingEnabled.toggle()
+                } label: {
+                    Image(systemName: note.handwritingEnabled ? "keyboard" : "pencil.tip.crop.circle")
+                        .foregroundStyle(.black.opacity(0.65))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(note.handwritingEnabled ? "Switch to typing" : "Switch to handwriting")
+
                 Button(action: onDelete) {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.black.opacity(0.45))
@@ -245,16 +266,65 @@ private struct StickyNoteCard: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Delete sticky note")
             }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        note.offset = CGSize(
+                            width: dragStart.width + value.translation.width,
+                            height: dragStart.height + value.translation.height
+                        )
+                    }
+                    .onEnded { _ in
+                        dragStart = note.offset
+                    }
+            )
 
-            TextEditor(text: $note.text)
-                .font(.system(size: 16, weight: .light, design: .rounded))
-                .foregroundColor(.black)
-                .scrollContentBackground(.hidden)
-                .background(Color.clear)
-                .accessibilityLabel("Sticky note text")
+            if note.handwritingEnabled {
+                PencilCanvas(
+                    drawing: $note.drawing,
+                    mode: .handwriting,
+                    color: .black,
+                    controller: nil
+                )
+                .background(Color.white.opacity(0.35))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+                .accessibilityLabel("Handwriting area for sticky note")
+            } else {
+                TextEditor(text: $note.text)
+                    .font(.system(size: 16, weight: .light, design: .rounded))
+                    .foregroundColor(.black)
+                    .scrollContentBackground(.hidden)
+                    .background(Color.clear)
+                    .accessibilityLabel("Sticky note text")
+            }
+
+            HStack {
+                Spacer()
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.black.opacity(0.55))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                let start = resizeStart ?? note.size
+                                resizeStart = start
+                                note.size = CGSize(
+                                    width: max(150, start.width + value.translation.width),
+                                    height: max(120, start.height + value.translation.height)
+                                )
+                            }
+                            .onEnded { _ in
+                                resizeStart = nil
+                            }
+                    )
+                    .accessibilityLabel("Resize sticky note")
+            }
         }
         .padding(12)
-        .frame(width: 210, height: 190)
+        .frame(width: note.size.width, height: note.size.height)
         .background(noteColor)
         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         .overlay {
@@ -263,18 +333,6 @@ private struct StickyNoteCard: View {
         }
         .shadow(color: .black.opacity(0.2), radius: 8, x: 2, y: 4)
         .offset(x: 48 + note.offset.width, y: 120 + note.offset.height)
-        .gesture(
-            DragGesture()
-                .onChanged { value in
-                    note.offset = CGSize(
-                        width: dragStart.width + value.translation.width,
-                        height: dragStart.height + value.translation.height
-                    )
-                }
-                .onEnded { _ in
-                    dragStart = note.offset
-                }
-        )
     }
 }
 
@@ -282,7 +340,7 @@ private struct PencilCanvas: UIViewRepresentable {
     @Binding var drawing: PKDrawing
     let mode: AnnotationMode
     let color: Color
-    let controller: CanvasController
+    let controller: CanvasController?
 
     func makeUIView(context: Context) -> PKCanvasView {
         let canvas = PKCanvasView()
@@ -292,16 +350,17 @@ private struct PencilCanvas: UIViewRepresentable {
         canvas.drawingPolicy = .anyInput
         canvas.delegate = context.coordinator
         canvas.drawing = drawing
-        controller.canvasView = canvas
+        controller?.canvasView = canvas
         updateTool(on: canvas)
         return canvas
     }
 
     func updateUIView(_ canvas: PKCanvasView, context: Context) {
+        context.coordinator.parent = self
         if canvas.drawing != drawing {
             canvas.drawing = drawing
         }
-        controller.canvasView = canvas
+        controller?.canvasView = canvas
         updateTool(on: canvas)
     }
 
@@ -310,15 +369,20 @@ private struct PencilCanvas: UIViewRepresentable {
     }
 
     private func updateTool(on canvas: PKCanvasView) {
-        canvas.isUserInteractionEnabled = mode == .highlight
-        if mode == .highlight {
+        canvas.isUserInteractionEnabled = mode != .note
+        switch mode {
+        case .highlight:
             let ink = UIColor(color)
-            canvas.tool = PKInkingTool(.marker, color: ink.withAlphaComponent(0.4), width: 20)
+            canvas.tool = PKInkingTool(.marker, color: ink.withAlphaComponent(0.52), width: 20)
+        case .handwriting:
+            canvas.tool = PKInkingTool(.pencil, color: UIColor.black.withAlphaComponent(0.88), width: 2.2)
+        case .note:
+            break
         }
     }
 
     final class Coordinator: NSObject, PKCanvasViewDelegate {
-        private let parent: PencilCanvas
+        var parent: PencilCanvas
 
         init(_ parent: PencilCanvas) {
             self.parent = parent
@@ -356,7 +420,7 @@ struct PencilAnnotationView_Previews: PreviewProvider {
                     .font(.system(size: 23, weight: .semibold, design: .serif))
                     .padding(.top, 8)
 
-                Text("Choose a phrase that stays with you. Use the Highlight tool to mark it. Switch to Note and choose Add sticky note to place a movable, editable note on the page.")
+                Text("Choose a phrase that stays with you. Highlight it, write anywhere on the page with the thin black pencil, or add a sticky note that you can type or handwrite and resize.")
                     .font(.system(size: 18, design: .serif))
                     .lineSpacing(9)
                     .foregroundStyle(Color.primary.opacity(0.85))
