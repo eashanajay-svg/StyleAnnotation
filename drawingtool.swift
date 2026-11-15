@@ -1,7 +1,10 @@
 import Combine
+import PDFKit
 import PencilKit
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
+import Vision
 
 private enum AnnotationMode: String, CaseIterable {
     case highlight = "Highlight"
@@ -63,7 +66,7 @@ private final class CanvasController: ObservableObject {
     }
 }
 
-/// A document surface with Apple Pencil highlighting, freehand writing, and sticky notes.
+/// A document surface with PDF/TXT import, Apple Pencil annotation, and sticky notes.
 struct PencilAnnotationView<Content: View>: View {
     private let content: Content
     private let pageHeight: CGFloat
@@ -72,6 +75,10 @@ struct PencilAnnotationView<Content: View>: View {
     @State private var mode: AnnotationMode = .highlight
     @State private var selectedColor: AnnotationColor = .yellow
     @State private var stickyNotes: [StickyNote] = []
+    @State private var importedDocumentText: String?
+    @State private var importedDocumentName: String?
+    @State private var isImporterPresented = false
+    @State private var importError: String?
     @StateObject private var canvasController = CanvasController()
 
     init(
@@ -82,13 +89,21 @@ struct PencilAnnotationView<Content: View>: View {
         self.content = content()
     }
 
+    private var canvasHeight: CGFloat {
+        guard let text = importedDocumentText else { return pageHeight }
+        // Reserve a little extra space so the imported text and its annotation canvas
+        // share a single, scrollable document surface.
+        let estimatedLines = ceil(Double(max(text.count, 1)) / 54.0)
+        return max(pageHeight, CGFloat(estimatedLines * 27.0 + 220.0))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             toolbar
 
             ScrollView {
                 ZStack(alignment: .topLeading) {
-                    content
+                    displayedContent
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .padding(36)
 
@@ -99,7 +114,7 @@ struct PencilAnnotationView<Content: View>: View {
                         controller: canvasController
                     )
                     .frame(maxWidth: .infinity)
-                    .frame(height: pageHeight)
+                    .frame(height: canvasHeight)
 
                     ForEach($stickyNotes) { $note in
                         StickyNoteCard(note: $note) {
@@ -109,7 +124,7 @@ struct PencilAnnotationView<Content: View>: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .frame(height: pageHeight)
+                .frame(height: canvasHeight)
                 .background(Color(uiColor: .systemBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay {
@@ -123,6 +138,52 @@ struct PencilAnnotationView<Content: View>: View {
             .background(Color(uiColor: .secondarySystemBackground))
         }
         .background(Color(uiColor: .secondarySystemBackground))
+        .fileImporter(
+            isPresented: $isImporterPresented,
+            allowedContentTypes: [.pdf, .plainText],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                importDocument(at: url)
+            case .failure(let error):
+                importError = error.localizedDescription
+            }
+        }
+        .alert("Unable to import document", isPresented: Binding(
+            get: { importError != nil },
+            set: { if !$0 { importError = nil } }
+        )) {
+            Button("OK", role: .cancel) { importError = nil }
+        } message: {
+            Text(importError ?? "Please choose a readable PDF or TXT file.")
+        }
+    }
+
+    @ViewBuilder
+    private var displayedContent: some View {
+        if let text = importedDocumentText {
+            VStack(alignment: .leading, spacing: 18) {
+                Text(importedDocumentName ?? "Imported document")
+                    .font(.system(size: 28, weight: .bold, design: .serif))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(height: 1)
+
+                Text(text)
+                    .font(.system(size: 18, design: .serif))
+                    .lineSpacing(8)
+                    .foregroundStyle(.primary.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        } else {
+            content
+        }
     }
 
     private var toolbar: some View {
@@ -130,6 +191,15 @@ struct PencilAnnotationView<Content: View>: View {
             Image(systemName: "scribble.variable")
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(.tint)
+
+            Button {
+                isImporterPresented = true
+            } label: {
+                Label(importedDocumentName == nil ? "Open PDF/TXT" : "Replace document", systemImage: "doc.badge.plus")
+                    .font(.system(size: 14, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+            .accessibilityHint("Choose a PDF or plain text document to display and annotate")
 
             HStack(spacing: 4) {
                 ForEach(AnnotationMode.allCases, id: \.self) { tool in
@@ -228,6 +298,88 @@ struct PencilAnnotationView<Content: View>: View {
             Rectangle()
                 .fill(Color.primary.opacity(0.08))
                 .frame(height: 1)
+        }
+    }
+
+    private func importDocument(at url: URL) {
+        let hasAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if hasAccess { url.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let text: String
+            if url.pathExtension.lowercased() == "pdf" {
+                text = try extractText(fromPDFAt: url)
+            } else {
+                let data = try Data(contentsOf: url)
+                guard let decoded = String(data: data, encoding: .utf8)
+                        ?? String(data: data, encoding: .utf16)
+                        ?? String(data: data, encoding: .isoLatin1) else {
+                    throw DocumentImportError.unsupportedTextEncoding
+                }
+                text = decoded
+            }
+
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw DocumentImportError.noReadableText
+            }
+            importedDocumentText = text
+            importedDocumentName = url.deletingPathExtension().lastPathComponent
+            drawing = PKDrawing()
+            stickyNotes.removeAll()
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    private func extractText(fromPDFAt url: URL) throws -> String {
+        guard let document = PDFDocument(url: url) else {
+            throw DocumentImportError.invalidPDF
+        }
+
+        var pageTexts: [String] = []
+        for pageIndex in 0..<document.pageCount {
+            guard let page = document.page(at: pageIndex) else { continue }
+            let embeddedText = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let pageText = embeddedText.isEmpty ? try recognizeText(on: page) : embeddedText
+            if !pageText.isEmpty {
+                pageTexts.append(pageText)
+            }
+        }
+        guard !pageTexts.isEmpty else { throw DocumentImportError.noReadableText }
+        return pageTexts.enumerated().map { index, text in
+            "Page \(index + 1)\n\n\(text)"
+        }.joined(separator: "\n\n")
+    }
+
+    /// OCR makes image-only/scanned PDF pages importable as well as text PDFs.
+    private func recognizeText(on page: PDFPage) throws -> String {
+        let image = page.thumbnail(of: CGSize(width: 1500, height: 2000), for: .mediaBox)
+        guard let cgImage = image.cgImage else { return "" }
+
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        try VNImageRequestHandler(cgImage: cgImage).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+            .joined(separator: "\n")
+    }
+}
+
+private enum DocumentImportError: LocalizedError {
+    case invalidPDF
+    case noReadableText
+    case unsupportedTextEncoding
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidPDF:
+            return "The selected PDF could not be opened."
+        case .noReadableText:
+            return "No readable text was found in the selected document."
+        case .unsupportedTextEncoding:
+            return "The text file uses an unsupported character encoding."
         }
     }
 }
@@ -398,34 +550,12 @@ struct PencilAnnotationView_Previews: PreviewProvider {
     static var previews: some View {
         PencilAnnotationView {
             VStack(alignment: .leading, spacing: 22) {
-                Text("FIELD NOTES")
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .tracking(2)
-                    .foregroundStyle(.secondary)
-
-                Text("The art of noticing")
-                    .font(.system(size: 34, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.primary)
-
-                Text("Small observations can change the way we understand a place.")
-                    .font(.system(size: 19, weight: .medium, design: .serif))
-                    .foregroundStyle(.secondary)
-
-                Text("A careful walk is a kind of attention. It asks us to slow down, look beyond the obvious, and notice details that might otherwise pass without a name. The shape of a shadow can tell us where the sun has been, while a worn path hints at the choices people make every day. Try highlighting a sentence, or add a yellow sticky note with your own thought.")
+                Text("Import a document to get started")
+                    .font(.system(size: 28, weight: .bold, design: .serif))
+                Text("Choose Open PDF/TXT above to bring in a PDF or plain-text file. Text-based PDFs are extracted directly, and scanned PDFs are converted with on-device text recognition. Then highlight passages, write with Apple Pencil, or add notes.")
                     .font(.system(size: 18, design: .serif))
-                    .lineSpacing(9)
-                    .foregroundStyle(Color.primary.opacity(0.85))
-
-                Text("Look closely")
-                    .font(.system(size: 23, weight: .semibold, design: .serif))
-                    .padding(.top, 8)
-
-                Text("Choose a phrase that stays with you. Highlight it, write anywhere on the page with the thin black pencil, or add a sticky note that you can type or handwrite and resize.")
-                    .font(.system(size: 18, design: .serif))
-                    .lineSpacing(9)
-                    .foregroundStyle(Color.primary.opacity(0.85))
-
-                Spacer()
+                    .lineSpacing(8)
+                    .foregroundStyle(.secondary)
             }
         }
     }
