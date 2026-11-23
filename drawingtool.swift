@@ -34,13 +34,22 @@ private enum AnnotationColor: String, CaseIterable, Identifiable {
     }
 }
 
-private struct StickyNote: Identifiable {
+private struct StickyNote: Identifiable, Equatable {
     var id = UUID()
     var text = ""
     var drawing = PKDrawing()
     var handwritingEnabled = true
     var offset = CGSize.zero
     var size = CGSize(width: 210, height: 190)
+
+    static func == (lhs: StickyNote, rhs: StickyNote) -> Bool {
+        lhs.id == rhs.id &&
+        lhs.text == rhs.text &&
+        lhs.drawing.dataRepresentation() == rhs.drawing.dataRepresentation() &&
+        lhs.handwritingEnabled == rhs.handwritingEnabled &&
+        lhs.offset == rhs.offset &&
+        lhs.size == rhs.size
+    }
 
     init(saved: SavedStickyNote) {
         id = saved.id
@@ -143,8 +152,8 @@ struct PencilAnnotationView: View {
                             Text("Page \(index + 1)")
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                                 .foregroundStyle(.secondary)
-                            if let source = page.attributedString(), !source.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                Text(AttributedString(source))
+                            if let source = page.attributedString, !source.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text(source.string)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .textSelection(.enabled)
                             } else {
@@ -183,7 +192,7 @@ struct PencilAnnotationView: View {
                 HStack(spacing: 4) {
                     ForEach(AnnotationMode.allCases, id: \.self) { tool in
                         Button { mode = tool } label: {
-                            Label(tool.rawValue, symbol: tool.symbol)
+                            Label(tool.rawValue, systemImage: tool.symbol)
                                 .font(.system(size: 14, weight: .medium))
                         }
                         .buttonStyle(.plain)
