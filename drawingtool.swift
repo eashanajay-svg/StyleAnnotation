@@ -43,12 +43,12 @@ private struct StickyNote: Identifiable, Equatable {
     var size = CGSize(width: 210, height: 190)
 
     static func == (lhs: StickyNote, rhs: StickyNote) -> Bool {
-        lhs.id == rhs.id &&
-        lhs.text == rhs.text &&
-        lhs.drawing.dataRepresentation() == rhs.drawing.dataRepresentation() &&
-        lhs.handwritingEnabled == rhs.handwritingEnabled &&
-        lhs.offset == rhs.offset &&
-        lhs.size == rhs.size
+        lhs.id == rhs.id
+            && lhs.text == rhs.text
+            && lhs.drawing.dataRepresentation() == rhs.drawing.dataRepresentation()
+            && lhs.handwritingEnabled == rhs.handwritingEnabled
+            && lhs.offset == rhs.offset
+            && lhs.size == rhs.size
     }
 
     init(saved: SavedStickyNote) {
@@ -62,10 +62,21 @@ private struct StickyNote: Identifiable, Equatable {
 
     init() { }
 
+    init(offset: CGSize) {
+        self.offset = offset
+    }
+
     var saved: SavedStickyNote {
-        SavedStickyNote(id: id, text: text, drawingData: drawing.dataRepresentation(),
-                        handwritingEnabled: handwritingEnabled, offsetX: offset.width,
-                        offsetY: offset.height, width: size.width, height: size.height)
+        SavedStickyNote(
+            id: id,
+            text: text,
+            drawingData: drawing.dataRepresentation(),
+            handwritingEnabled: handwritingEnabled,
+            offsetX: offset.width,
+            offsetY: offset.height,
+            width: size.width,
+            height: size.height
+        )
     }
 }
 
@@ -97,45 +108,15 @@ struct PencilAnnotationView: View {
         _stickyNotes = State(initialValue: file.notes.map(StickyNote.init(saved:)))
     }
 
-    private var canvasHeight: CGFloat { max(pageHeight, CGFloat(max(file.name.count, 1)) * 30 + 1400) }
+    private var canvasHeight: CGFloat {
+        let nameHeight = CGFloat(max(file.name.count, 1)) * 30
+        return max(pageHeight, nameHeight + 1400)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
-            ScrollView {
-                ZStack(alignment: .topLeading) {
-                    documentContent
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(36)
-                    PencilCanvas(drawing: $drawing, mode: mode, color: selectedColor.color, controller: canvasController)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: canvasHeight)
-                        .allowsHitTesting(mode != .note)
-                    ForEach($stickyNotes) { $note in
-                        StickyNoteCard(note: $note) {
-                            let id = note.id
-                            stickyNotes.removeAll { $0.id == id }
-                            scheduleAutosave()
-                        }
-                    }
-                }
-                .contentShape(Rectangle())
-                .onTapGesture { location in
-                    if mode == .note {
-                        stickyNotes.append(StickyNote(offset: CGSize(width: location.x - 48 - 105, height: location.y - 120 - 95)))
-                        scheduleAutosave()
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: canvasHeight)
-                .background(Color(uiColor: .systemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.primary.opacity(0.07), lineWidth: 1) }
-                .shadow(color: .black.opacity(0.06), radius: 16, y: 6)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 16)
-            }
-            .background(Color(uiColor: .secondarySystemBackground))
+            annotationCanvas
         }
         .background(Color(uiColor: .secondarySystemBackground))
         .navigationTitle(file.name)
@@ -143,93 +124,197 @@ struct PencilAnnotationView: View {
         .onChange(of: drawing) { _ in scheduleAutosave() }
         .onChange(of: stickyNotes) { _ in scheduleAutosave() }
         .onDisappear { saveNow() }
-        .alert("Unable to read document", isPresented: Binding(
-            get: { importError != nil }, set: { if !$0 { importError = nil } }
-        )) {
+        .alert(
+            "Unable to read document",
+            isPresented: Binding(
+                get: { importError != nil },
+                set: { if !$0 { importError = nil } }
+            )
+        ) {
             Button("OK", role: .cancel) { importError = nil }
-        } message: { Text(importError ?? "The selected document could not be read.") }
+        } message: {
+            Text(importError ?? "The selected document could not be read.")
+        }
+    }
+
+    private var annotationCanvas: some View {
+        ScrollView {
+            ZStack(alignment: .topLeading) {
+                documentContent
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(36)
+
+                PencilCanvas(
+                    drawing: $drawing,
+                    mode: mode,
+                    color: selectedColor.color,
+                    controller: canvasController
+                )
+                .frame(maxWidth: .infinity)
+                .frame(height: canvasHeight)
+                .allowsHitTesting(mode != .note)
+
+                stickyNotesOverlay
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { location in
+                addStickyNote(at: location)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: canvasHeight)
+            .background(Color(uiColor: .systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(canvasOverlay)
+            .shadow(color: .black.opacity(0.06), radius: 16, y: 6)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+        }
+        .background(Color(uiColor: .secondarySystemBackground))
+    }
+
+    private var canvasOverlay: some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+    }
+
+    private var stickyNotesOverlay: some View {
+        ForEach($stickyNotes) { $note in
+            StickyNoteCard(note: $note) {
+                removeStickyNote(note.id)
+            }
+        }
+    }
+
+    private func addStickyNote(at location: CGPoint) {
+        guard mode == .note else { return }
+        let offset = CGSize(
+            width: location.x - 48 - 105,
+            height: location.y - 120 - 95
+        )
+        stickyNotes.append(StickyNote(offset: offset))
+        scheduleAutosave()
+    }
+
+    private func removeStickyNote(_ id: UUID) {
+        stickyNotes.removeAll { $0.id == id }
+        scheduleAutosave()
     }
 
     @ViewBuilder
     private var documentContent: some View {
         if file.isPDF, let document = PDFDocument(url: file.fileURL) {
-            VStack(alignment: .leading, spacing: 22) {
-                ForEach(0..<document.pageCount, id: \.self) { index in
-                    if let page = document.page(at: index) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Page \(index + 1)")
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.secondary)
-                            if let source = page.attributedString, !source.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                Text(source.string)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .textSelection(.enabled)
-                            } else {
-                                Text((try? recognizeText(on: page)) ?? "")
-                                    .font(.system(size: 18, design: .serif))
-                                    .lineSpacing(6)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .textSelection(.enabled)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(18)
-                        .background(Color(uiColor: .secondarySystemBackground).opacity(0.55))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
+            pdfContent(document)
+        } else if let text = try? String(contentsOf: file.fileURL, encoding: .utf8) {
+            textContent(text)
+        } else {
+            unreadableDocumentContent
+        }
+    }
+
+    private func pdfContent(_ document: PDFDocument) -> some View {
+        VStack(alignment: .leading, spacing: 22) {
+            ForEach(0..<document.pageCount, id: \.self) { index in
+                if let page = document.page(at: index) {
+                    PDFPageContent(page: page, pageNumber: index + 1, recognizeText: recognizeText)
                 }
             }
-        } else if let text = try? String(contentsOf: file.fileURL, encoding: .utf8) {
-            VStack(alignment: .leading, spacing: 18) {
-                Text(file.name).font(.system(size: 28, weight: .bold, design: .serif))
-                Text(text).font(.system(size: 18, design: .serif)).lineSpacing(8).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 14) {
-                Image(systemName: "doc.text.viewfinder").font(.largeTitle).foregroundStyle(.tint)
-                Text(file.name).font(.title2.bold())
-                Text("This file could not be displayed. Try removing it and adding a readable PDF or text file.")
-                    .foregroundStyle(.secondary)
-            }
+        }
+    }
+
+    private func textContent(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(file.name)
+                .font(.system(size: 28, weight: .bold, design: .serif))
+            Text(text)
+                .font(.system(size: 18, design: .serif))
+                .lineSpacing(8)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
+
+    private var unreadableDocumentContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Image(systemName: "doc.text.viewfinder")
+                .font(.largeTitle)
+                .foregroundStyle(.tint)
+            Text(file.name)
+                .font(.title2.bold())
+            Text("This file could not be displayed. Try removing it and adding a readable PDF or text file.")
+                .foregroundStyle(.secondary)
         }
     }
 
     private var toolbar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 14) {
-                HStack(spacing: 4) {
-                    ForEach(AnnotationMode.allCases, id: \.self) { tool in
-                        Button { mode = tool } label: {
-                            Label(tool.rawValue, systemImage: tool.symbol)
-                                .font(.system(size: 14, weight: .medium))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
-                                .background(mode == tool ? Color.accentColor.opacity(0.15) : Color.clear)
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+                modeButtons
                 if mode == .highlight {
-                    HStack(spacing: 6) {
-                        ForEach(AnnotationColor.allCases) { annotationColor in
-                            Button {
-                                selectedColor = annotationColor
-                            } label: {
-                                Circle()
-                                    .fill(annotationColor.color)
-                                    .frame(width: 22, height: 22)
-                                    .overlay(Circle().stroke(Color.primary.opacity(selectedColor == annotationColor ? 0.8 : 0.15), lineWidth: selectedColor == annotationColor ? 2 : 1))
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("\(annotationColor.rawValue) highlight")
-                        }
-                    }
+                    colorButtons
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
         }
+    }
+
+    private var modeButtons: some View {
+        HStack(spacing: 4) {
+            ForEach(AnnotationMode.allCases, id: \.self) { tool in
+                modeButton(tool)
+            }
+        }
+    }
+
+    private func modeButton(_ tool: AnnotationMode) -> some View {
+        Button {
+            mode = tool
+        } label: {
+            modeButtonLabel(tool)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func modeButtonLabel(_ tool: AnnotationMode) -> some View {
+        let isSelected = mode == tool
+        return Label(tool.rawValue, systemImage: tool.symbol)
+            .font(.system(size: 14, weight: .medium))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var colorButtons: some View {
+        HStack(spacing: 6) {
+            ForEach(AnnotationColor.allCases) { annotationColor in
+                colorButton(annotationColor)
+            }
+        }
+    }
+
+    private func colorButton(_ annotationColor: AnnotationColor) -> some View {
+        Button {
+            selectedColor = annotationColor
+        } label: {
+            colorButtonLabel(annotationColor)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(annotationColor.rawValue) highlight")
+    }
+
+    private func colorButtonLabel(_ annotationColor: AnnotationColor) -> some View {
+        let isSelected = selectedColor == annotationColor
+        let strokeOpacity = isSelected ? 0.8 : 0.15
+        let strokeWidth: CGFloat = isSelected ? 2 : 1
+
+        return Circle()
+            .fill(annotationColor.color)
+            .frame(width: 22, height: 22)
+            .overlay {
+                Circle()
+                    .stroke(Color.primary.opacity(strokeOpacity), lineWidth: strokeWidth)
+            }
     }
 
     private func scheduleAutosave() {
@@ -253,7 +338,49 @@ struct PencilAnnotationView: View {
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
         try VNImageRequestHandler(cgImage: cgImage).perform([request])
-        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+        let observations = request.results ?? []
+        return observations.compactMap { observation in
+            observation.topCandidates(1).first?.string
+        }.joined(separator: "\n")
+    }
+}
+
+private struct PDFPageContent: View {
+    let page: PDFPage
+    let pageNumber: Int
+    let recognizeText: (PDFPage) throws -> String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Page \(pageNumber)")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+
+            if let source = page.attributedString,
+               !source.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                attributedText(source.string)
+            } else {
+                recognizedText
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(Color(uiColor: .secondarySystemBackground).opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func attributedText(_ text: String) -> some View {
+        Text(text)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+    }
+
+    private var recognizedText: some View {
+        Text((try? recognizeText(page)) ?? "")
+            .font(.system(size: 18, design: .serif))
+            .lineSpacing(6)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
     }
 }
 
@@ -266,48 +393,136 @@ private struct StickyNoteCard: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            HStack {
-                Text("NOTE").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.2).foregroundStyle(.black.opacity(0.55))
-                Spacer()
-                Button { note.handwritingEnabled.toggle() } label: {
-                    Image(systemName: note.handwritingEnabled ? "keyboard" : "pencil.tip.crop.circle").foregroundStyle(.black.opacity(0.65))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(note.handwritingEnabled ? "Switch to typing" : "Switch to handwriting")
-                Button(action: onDelete) { Image(systemName: "xmark.circle.fill").foregroundStyle(.black.opacity(0.45)) }
-                    .buttonStyle(.plain).accessibilityLabel("Delete sticky note")
-            }
-            .contentShape(Rectangle())
-            .gesture(DragGesture().onChanged { value in
-                note.offset = CGSize(width: dragStart.width + value.translation.width, height: dragStart.height + value.translation.height)
-            }.onEnded { _ in dragStart = note.offset })
+            noteHeader
 
             if note.handwritingEnabled {
-                PencilCanvas(drawing: $note.drawing, mode: .handwriting, color: .black, controller: nil)
-                    .background(Color.white.opacity(0.35)).clipShape(RoundedRectangle(cornerRadius: 3))
-                    .accessibilityLabel("Handwriting area for sticky note")
+                handwritingEditor
             } else {
-                TextEditor(text: $note.text).font(.system(size: 16, weight: .light, design: .rounded))
-                    .foregroundColor(.black).scrollContentBackground(.hidden).background(Color.clear)
-                    .accessibilityLabel("Sticky note text")
+                textEditor
             }
-            HStack {
-                Spacer()
-                Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.black.opacity(0.55)).frame(width: 24, height: 24).contentShape(Rectangle())
-                    .gesture(DragGesture().onChanged { value in
-                        let start = resizeStart ?? note.size
-                        resizeStart = start
-                        note.size = CGSize(width: max(150, start.width + value.translation.width), height: max(120, start.height + value.translation.height))
-                    }.onEnded { _ in resizeStart = nil })
-                    .accessibilityLabel("Resize sticky note")
-            }
+
+            resizeHandle
         }
-        .padding(12).frame(width: note.size.width, height: note.size.height).background(noteColor)
+        .padding(12)
+        .frame(width: note.size.width, height: note.size.height)
+        .background(noteColor)
         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 4, style: .continuous).stroke(Color.black.opacity(0.08), lineWidth: 1) }
+        .overlay {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+        }
         .shadow(color: .black.opacity(0.2), radius: 8, x: 2, y: 4)
         .offset(x: 48 + note.offset.width, y: 120 + note.offset.height)
+    }
+
+    private var noteHeader: some View {
+        HStack {
+            Text("NOTE")
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .tracking(1.2)
+                .foregroundStyle(.black.opacity(0.55))
+            Spacer()
+            handwritingToggleButton
+            deleteButton
+        }
+        .contentShape(Rectangle())
+        .gesture(makeDragGesture())
+    }
+
+    private var handwritingToggleButton: some View {
+        let iconName = note.handwritingEnabled
+            ? "keyboard"
+            : "pencil.tip.crop.circle"
+        let accessibilityLabel = note.handwritingEnabled
+            ? "Switch to typing"
+            : "Switch to handwriting"
+
+        return Button {
+            note.handwritingEnabled.toggle()
+        } label: {
+            Image(systemName: iconName)
+                .foregroundStyle(.black.opacity(0.65))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var deleteButton: some View {
+        Button(action: onDelete) {
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.black.opacity(0.45))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Delete sticky note")
+    }
+
+    private func makeDragGesture() -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                updateDragOffset(value)
+            }
+            .onEnded { _ in
+                dragStart = note.offset
+            }
+    }
+
+    private func updateDragOffset(_ value: DragGesture.Value) {
+        let width = dragStart.width + value.translation.width
+        let height = dragStart.height + value.translation.height
+        note.offset = CGSize(width: width, height: height)
+    }
+
+    private var handwritingEditor: some View {
+        PencilCanvas(
+            drawing: $note.drawing,
+            mode: .handwriting,
+            color: .black,
+            controller: nil
+        )
+        .background(Color.white.opacity(0.35))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+        .accessibilityLabel("Handwriting area for sticky note")
+    }
+
+    private var textEditor: some View {
+        TextEditor(text: $note.text)
+            .font(.system(size: 16, weight: .light, design: .rounded))
+            .foregroundColor(.black)
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
+            .accessibilityLabel("Sticky note text")
+    }
+
+    private var resizeHandle: some View {
+        HStack {
+            Spacer()
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.black.opacity(0.55))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+                .gesture(makeResizeGesture())
+                .accessibilityLabel("Resize sticky note")
+        }
+    }
+
+    private func makeResizeGesture() -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                updateSize(value)
+            }
+            .onEnded { _ in
+                resizeStart = nil
+            }
+    }
+
+    private func updateSize(_ value: DragGesture.Value) {
+        let start = resizeStart ?? note.size
+        resizeStart = start
+
+        let width = max(150, start.width + value.translation.width)
+        let height = max(120, start.height + value.translation.height)
+        note.size = CGSize(width: width, height: height)
     }
 }
 
@@ -345,9 +560,17 @@ private struct PencilCanvas: UIViewRepresentable {
     private func updateTool(on canvas: PKCanvasView) {
         switch mode {
         case .highlight:
-            canvas.tool = PKInkingTool(.marker, color: UIColor(color).withAlphaComponent(0.52), width: 24)
+            canvas.tool = PKInkingTool(
+                .marker,
+                color: UIColor(color).withAlphaComponent(0.52),
+                width: 24
+            )
         case .handwriting:
-            canvas.tool = PKInkingTool(.pencil, color: UIColor.black.withAlphaComponent(0.88), width: 2.2)
+            canvas.tool = PKInkingTool(
+                .pencil,
+                color: UIColor.black.withAlphaComponent(0.88),
+                width: 2.2
+            )
         case .note:
             break
         }
