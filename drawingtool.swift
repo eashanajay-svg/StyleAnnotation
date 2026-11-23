@@ -80,11 +80,20 @@ private struct StickyNote: Identifiable, Equatable {
     }
 }
 
+private struct AnnotationSnapshot: Equatable {
+    let drawing: PKDrawing
+    let stickyNotes: [StickyNote]
+
+    static func == (lhs: AnnotationSnapshot, rhs: AnnotationSnapshot) -> Bool {
+        lhs.drawing.dataRepresentation() == rhs.drawing.dataRepresentation()
+            && lhs.stickyNotes == rhs.stickyNotes
+    }
+}
+
 private final class CanvasController: ObservableObject {
     weak var canvasView: PKCanvasView?
-    func undo() { canvasView?.undoManager?.undo() }
-    func redo() { canvasView?.undoManager?.redo() }
-    func clear() { canvasView?.drawing = PKDrawing() }
+    var onDrawingBegan: (() -> Void)?
+    var onDrawingEnded: (() -> Void)?
 }
 
 struct PencilAnnotationView: View {
@@ -96,6 +105,11 @@ struct PencilAnnotationView: View {
     @State private var selectedColor: AnnotationColor = .yellow
     @State private var stickyNotes: [StickyNote]
     @State private var importError: String?
+    @State private var isDeleteAllConfirmationPresented = false
+    @State private var undoHistory: [AnnotationSnapshot] = []
+    @State private var redoHistory: [AnnotationSnapshot] = []
+    @State private var historySnapshot: AnnotationSnapshot
+    @State private var drawingHistoryBaseline: AnnotationSnapshot?
     @StateObject private var canvasController = CanvasController()
     @State private var autosaveTask: Task<Void, Never>?
 
@@ -104,13 +118,27 @@ struct PencilAnnotationView: View {
     init(file: WorkspaceFile, onSave: @escaping (Data, [SavedStickyNote]) -> Void) {
         self.file = file
         self.onSave = onSave
-        _drawing = State(initialValue: (try? PKDrawing(data: file.drawingData)) ?? PKDrawing())
-        _stickyNotes = State(initialValue: file.notes.map(StickyNote.init(saved:)))
+        let initialDrawing = (try? PKDrawing(data: file.drawingData)) ?? PKDrawing()
+        let initialStickyNotes = file.notes.map(StickyNote.init(saved:))
+        _drawing = State(initialValue: initialDrawing)
+        _stickyNotes = State(initialValue: initialStickyNotes)
+        _historySnapshot = State(initialValue: AnnotationSnapshot(
+            drawing: initialDrawing,
+            stickyNotes: initialStickyNotes
+        ))
     }
 
     private var canvasHeight: CGFloat {
         let nameHeight = CGFloat(max(file.name.count, 1)) * 30
         return max(pageHeight, nameHeight + 1400)
+    }
+
+    private var currentSnapshot: AnnotationSnapshot {
+        AnnotationSnapshot(drawing: drawing, stickyNotes: stickyNotes)
+    }
+
+    private var hasAnnotations: Bool {
+        !drawing.strokes.isEmpty || !stickyNotes.isEmpty
     }
 
     var body: some View {
@@ -121,9 +149,31 @@ struct PencilAnnotationView: View {
         .background(Color(uiColor: .secondarySystemBackground))
         .navigationTitle(file.name)
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: drawing) { _ in scheduleAutosave() }
-        .onChange(of: stickyNotes) { _ in scheduleAutosave() }
+        .onAppear {
+            canvasController.onDrawingBegan = { beginDrawingHistoryGroup() }
+            canvasController.onDrawingEnded = { finishDrawingHistoryGroup() }
+        }
+        .onChange(of: drawing) { _ in
+            recordHistoryChange()
+            scheduleAutosave()
+        }
+        .onChange(of: stickyNotes) { _ in
+            recordHistoryChange()
+            scheduleAutosave()
+        }
         .onDisappear { saveNow() }
+        .confirmationDialog(
+            "Delete all annotations?",
+            isPresented: $isDeleteAllConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete All", role: .destructive) {
+                deleteAllAnnotations()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will remove all drawings and sticky notes from this file.")
+        }
         .alert(
             "Unable to read document",
             isPresented: Binding(
@@ -200,6 +250,68 @@ struct PencilAnnotationView: View {
         scheduleAutosave()
     }
 
+    private func recordHistoryChange() {
+        let snapshot = currentSnapshot
+        guard snapshot != historySnapshot else { return }
+
+        // PencilKit reports changes throughout a stroke. Group those callbacks
+        // into one undo step, rather than making undo stop at partial strokes.
+        if drawingHistoryBaseline != nil {
+            historySnapshot = snapshot
+            return
+        }
+
+        undoHistory.append(historySnapshot)
+        redoHistory.removeAll()
+        historySnapshot = snapshot
+    }
+
+    private func beginDrawingHistoryGroup() {
+        guard drawingHistoryBaseline == nil else { return }
+        let snapshot = currentSnapshot
+        historySnapshot = snapshot
+        drawingHistoryBaseline = snapshot
+    }
+
+    private func finishDrawingHistoryGroup() {
+        guard let baseline = drawingHistoryBaseline else { return }
+        drawingHistoryBaseline = nil
+        let snapshot = currentSnapshot
+        historySnapshot = snapshot
+        guard snapshot != baseline else { return }
+        undoHistory.append(baseline)
+        redoHistory.removeAll()
+    }
+
+    private func undo() {
+        guard drawingHistoryBaseline == nil, let previous = undoHistory.popLast() else { return }
+        redoHistory.append(currentSnapshot)
+        historySnapshot = previous
+        drawing = previous.drawing
+        stickyNotes = previous.stickyNotes
+        scheduleAutosave()
+    }
+
+    private func redo() {
+        guard drawingHistoryBaseline == nil, let next = redoHistory.popLast() else { return }
+        undoHistory.append(currentSnapshot)
+        historySnapshot = next
+        drawing = next.drawing
+        stickyNotes = next.stickyNotes
+        scheduleAutosave()
+    }
+
+    private func deleteAllAnnotations() {
+        guard drawingHistoryBaseline == nil, hasAnnotations else { return }
+        let cleared = AnnotationSnapshot(drawing: PKDrawing(), stickyNotes: [])
+        undoHistory.append(currentSnapshot)
+        redoHistory.removeAll()
+        historySnapshot = cleared
+        drawing = cleared.drawing
+        stickyNotes = cleared.stickyNotes
+        scheduleAutosave()
+    }
+
     @ViewBuilder
     private var documentContent: some View {
         if file.isPDF, let document = PDFDocument(url: file.fileURL) {
@@ -252,10 +364,41 @@ struct PencilAnnotationView: View {
                 if mode == .highlight {
                     colorButtons
                 }
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 1, height: 24)
+                historyButtons
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
         }
+    }
+
+    private var historyButtons: some View {
+        HStack(spacing: 8) {
+            Button(action: undo) {
+                Label("Undo", systemImage: "arrow.uturn.backward")
+            }
+            .disabled(undoHistory.isEmpty || drawingHistoryBaseline != nil)
+            .accessibilityHint("Undo the most recent drawing or sticky note change")
+
+            Button(action: redo) {
+                Label("Redo", systemImage: "arrow.uturn.forward")
+            }
+            .disabled(redoHistory.isEmpty || drawingHistoryBaseline != nil)
+            .accessibilityHint("Redo the most recently undone change")
+
+            Button {
+                isDeleteAllConfirmationPresented = true
+            } label: {
+                Label("Delete All", systemImage: "trash")
+            }
+            .disabled(!hasAnnotations || drawingHistoryBaseline != nil)
+            .tint(.red)
+            .accessibilityHint("Delete all drawings and sticky notes in this file")
+        }
+        .buttonStyle(.bordered)
+        .fixedSize()
     }
 
     private var modeButtons: some View {
@@ -579,6 +722,15 @@ private struct PencilCanvas: UIViewRepresentable {
     final class Coordinator: NSObject, PKCanvasViewDelegate {
         var parent: PencilCanvas
         init(_ parent: PencilCanvas) { self.parent = parent }
+
+        func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+            parent.controller?.onDrawingBegan?()
+        }
+
+        func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+            parent.controller?.onDrawingEnded?()
+        }
+
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             parent.drawing = canvasView.drawing
         }
