@@ -110,12 +110,20 @@ struct PencilAnnotationView: View {
                     PencilCanvas(drawing: $drawing, mode: mode, color: selectedColor.color, controller: canvasController)
                         .frame(maxWidth: .infinity)
                         .frame(height: canvasHeight)
+                        .allowsHitTesting(mode != .note)
                     ForEach($stickyNotes) { $note in
                         StickyNoteCard(note: $note) {
                             let id = note.id
                             stickyNotes.removeAll { $0.id == id }
                             scheduleAutosave()
                         }
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { location in
+                    if mode == .note {
+                        stickyNotes.append(StickyNote(offset: CGSize(width: location.x - 48 - 105, height: location.y - 120 - 95)))
+                        scheduleAutosave()
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -194,11 +202,33 @@ struct PencilAnnotationView: View {
                         Button { mode = tool } label: {
                             Label(tool.rawValue, systemImage: tool.symbol)
                                 .font(.system(size: 14, weight: .medium))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .background(mode == tool ? Color.accentColor.opacity(0.15) : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
                         .buttonStyle(.plain)
                     }
                 }
+                if mode == .highlight {
+                    HStack(spacing: 6) {
+                        ForEach(AnnotationColor.allCases) { annotationColor in
+                            Button {
+                                selectedColor = annotationColor
+                            } label: {
+                                Circle()
+                                    .fill(annotationColor.color)
+                                    .frame(width: 22, height: 22)
+                                    .overlay(Circle().stroke(Color.primary.opacity(selectedColor == annotationColor ? 0.8 : 0.15), lineWidth: selectedColor == annotationColor ? 2 : 1))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(annotationColor.rawValue) highlight")
+                        }
+                    }
+                }
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
         }
     }
 
@@ -292,9 +322,11 @@ private struct PencilCanvas: UIViewRepresentable {
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.isScrollEnabled = false
-        canvas.drawingPolicy = .pencilOnly
+        canvas.drawingPolicy = .anyInput
         canvas.delegate = context.coordinator
         canvas.drawing = drawing
+        canvas.alwaysBounceVertical = false
+        canvas.alwaysBounceHorizontal = false
         controller?.canvasView = canvas
         updateTool(on: canvas)
         return canvas
@@ -303,6 +335,7 @@ private struct PencilCanvas: UIViewRepresentable {
     func updateUIView(_ canvas: PKCanvasView, context: Context) {
         context.coordinator.parent = self
         if canvas.drawing != drawing { canvas.drawing = drawing }
+        canvas.isUserInteractionEnabled = mode != .note
         controller?.canvasView = canvas
         updateTool(on: canvas)
     }
@@ -310,17 +343,21 @@ private struct PencilCanvas: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     private func updateTool(on canvas: PKCanvasView) {
-        canvas.isUserInteractionEnabled = mode != .note
         switch mode {
-        case .highlight: canvas.tool = PKInkingTool(.marker, color: UIColor(color).withAlphaComponent(0.52), width: 20)
-        case .handwriting: canvas.tool = PKInkingTool(.pencil, color: UIColor.black.withAlphaComponent(0.88), width: 2.2)
-        case .note: break
+        case .highlight:
+            canvas.tool = PKInkingTool(.marker, color: UIColor(color).withAlphaComponent(0.52), width: 24)
+        case .handwriting:
+            canvas.tool = PKInkingTool(.pencil, color: UIColor.black.withAlphaComponent(0.88), width: 2.2)
+        case .note:
+            break
         }
     }
 
     final class Coordinator: NSObject, PKCanvasViewDelegate {
         var parent: PencilCanvas
         init(_ parent: PencilCanvas) { self.parent = parent }
-        func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) { parent.drawing = canvasView.drawing }
+        func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            parent.drawing = canvasView.drawing
+        }
     }
 }
