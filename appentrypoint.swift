@@ -1,4 +1,5 @@
 import SwiftUI
+import PencilKit
 import UniformTypeIdentifiers
 
 struct WorkspaceFile: Codable, Identifiable {
@@ -12,7 +13,7 @@ struct WorkspaceFile: Codable, Identifiable {
     var isPDF: Bool { fileURL.pathExtension.lowercased() == "pdf" }
 }
 
-struct SavedStickyNote: Codable, Identifiable {
+struct SavedStickyNote: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var text = ""
     var drawingData = PKDrawing().dataRepresentation()

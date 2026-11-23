@@ -34,7 +34,7 @@ private enum AnnotationColor: String, CaseIterable, Identifiable {
     }
 }
 
-private struct StickyNote: Identifiable, Equatable {
+private struct StickyNote: Identifiable {
     var id = UUID()
     var text = ""
     var drawing = PKDrawing()
@@ -67,7 +67,6 @@ private final class CanvasController: ObservableObject {
     func clear() { canvasView?.drawing = PKDrawing() }
 }
 
-/// The annotation surface for one file in a workspace. Drawing and notes autosave to the workspace store.
 struct PencilAnnotationView: View {
     let file: WorkspaceFile
     let onSave: (Data, [SavedStickyNote]) -> Void
@@ -184,48 +183,14 @@ struct PencilAnnotationView: View {
                 HStack(spacing: 4) {
                     ForEach(AnnotationMode.allCases, id: \.self) { tool in
                         Button { mode = tool } label: {
-                            Label(tool.rawValue, systemImage: tool.symbol)
+                            Label(tool.rawValue, symbol: tool.symbol)
                                 .font(.system(size: 14, weight: .medium))
-                                .padding(.horizontal, 10).padding(.vertical, 9)
-                                .background { if mode == tool { Capsule().fill(Color.accentColor.opacity(0.13)) } }
-                                .foregroundStyle(mode == tool ? Color.accentColor : Color.secondary)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityAddTraits(mode == tool ? .isSelected : [])
                     }
                 }
-                if mode == .highlight {
-                    Rectangle().fill(Color.primary.opacity(0.1)).frame(width: 1, height: 24)
-                    HStack(spacing: 8) {
-                        ForEach(AnnotationColor.allCases) { choice in
-                            Button { selectedColor = choice } label: {
-                                Circle().fill(choice.color).frame(width: 20, height: 20)
-                                    .overlay { Circle().strokeBorder(.white.opacity(0.9), lineWidth: 2) }
-                                    .padding(3).overlay { Circle().strokeBorder(selectedColor == choice ? Color.primary.opacity(0.65) : .clear, lineWidth: 1.5) }
-                            }
-                            .buttonStyle(.plain).accessibilityLabel("\(choice.rawValue) highlighter")
-                        }
-                    }
-                } else if mode == .note {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { stickyNotes.append(StickyNote()) }
-                        scheduleAutosave()
-                    } label: { Label("Add sticky note", systemImage: "note.text.badge.plus").font(.system(size: 14, weight: .medium)) }
-                    .buttonStyle(.borderless)
-                    .accessibilityHint("Adds a movable, resizable note with handwriting enabled by default")
-                } else {
-                    Label("Write with Apple Pencil", systemImage: "pencil.tip")
-                        .font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
-                }
-                Button(action: canvasController.undo) { Image(systemName: "arrow.uturn.backward") }.accessibilityLabel("Undo")
-                Button(action: canvasController.redo) { Image(systemName: "arrow.uturn.forward") }.accessibilityLabel("Redo")
-                Button { canvasController.clear(); stickyNotes.removeAll(); drawing = PKDrawing(); scheduleAutosave() } label: { Image(systemName: "trash") }
-                    .accessibilityLabel("Clear annotations and sticky notes")
             }
-            .buttonStyle(.borderless).foregroundStyle(Color.secondary).padding(.horizontal, 16).padding(.vertical, 12)
         }
-        .background(.regularMaterial)
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1) }
     }
 
     private func scheduleAutosave() {
